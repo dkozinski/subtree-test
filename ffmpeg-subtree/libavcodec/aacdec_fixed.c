@@ -75,11 +75,11 @@
 #include "aac.h"
 #include "aactab.h"
 #include "aacdectab.h"
+#include "adts_header.h"
 #include "cbrt_data.h"
 #include "sbr.h"
 #include "aacsbr.h"
 #include "mpeg4audio.h"
-#include "aacadtsdec.h"
 #include "profiles.h"
 #include "libavutil/intfloat.h"
 
@@ -155,14 +155,14 @@ static void vector_pow43(int *coefs, int len)
     for (i=0; i<len; i++) {
         coef = coefs[i];
         if (coef < 0)
-            coef = -(int)ff_cbrt_tab_fixed[-coef];
+            coef = -(int)ff_cbrt_tab_fixed[(-coef) & 8191];
         else
-            coef = (int)ff_cbrt_tab_fixed[coef];
+            coef =  (int)ff_cbrt_tab_fixed[  coef  & 8191];
         coefs[i] = coef;
     }
 }
 
-static void subband_scale(int *dst, int *src, int scale, int offset, int len)
+static void subband_scale(int *dst, int *src, int scale, int offset, int len, void *log_context)
 {
     int ssign = scale < 0 ? -1 : 1;
     int s = FFABS(scale);
@@ -183,13 +183,13 @@ static void subband_scale(int *dst, int *src, int scale, int offset, int len)
         }
     } else if (s > -32) {
         s = s + 32;
-        round = 1 << (s-1);
+        round = 1U << (s-1);
         for (i=0; i<len; i++) {
             out = (int)((int64_t)((int64_t)src[i] * c + round) >> s);
             dst[i] = out * (unsigned)ssign;
         }
     } else {
-        av_log(NULL, AV_LOG_ERROR, "Overflow in subband_scale()\n");
+        av_log(log_context, AV_LOG_ERROR, "Overflow in subband_scale()\n");
     }
 }
 
@@ -427,7 +427,9 @@ static void apply_independent_coupling_fixed(AACContext *ac,
 
     c = cce_scale_fixed[gain & 7];
     shift = (gain-1024) >> 3;
-    if (shift < 0) {
+    if (shift < -31) {
+        return;
+    } else if (shift < 0) {
         shift = -shift;
         round = 1 << (shift - 1);
 
@@ -459,7 +461,7 @@ AVCodec ff_aac_fixed_decoder = {
         AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_NONE
     },
     .capabilities    = AV_CODEC_CAP_CHANNEL_CONF | AV_CODEC_CAP_DR1,
-    .caps_internal   = FF_CODEC_CAP_INIT_THREADSAFE,
+    .caps_internal   = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
     .channel_layouts = aac_channel_layout,
     .profiles        = NULL_IF_CONFIG_SMALL(ff_aac_profiles),
     .flush = flush,

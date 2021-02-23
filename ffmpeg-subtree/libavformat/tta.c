@@ -35,7 +35,7 @@ typedef struct TTAContext {
     int last_frame_size;
 } TTAContext;
 
-static int tta_probe(AVProbeData *p)
+static int tta_probe(const AVProbeData *p)
 {
     if (AV_RL32(&p->buf[0]) == MKTAG('T', 'T', 'A', '1') &&
         (AV_RL16(&p->buf[4]) == 1 || AV_RL16(&p->buf[4]) == 2) &&
@@ -119,7 +119,7 @@ static int tta_read_header(AVFormatContext *s)
     for (i = 0; i < c->totalframes; i++) {
         uint32_t size = avio_rl32(s->pb);
         int r;
-        if ((r = av_add_index_entry(st, framepos, i * c->frame_size, size, 0,
+        if ((r = av_add_index_entry(st, framepos, i * (int64_t)c->frame_size, size, 0,
                                     AVINDEX_KEYFRAME)) < 0)
             return r;
         framepos += size;
@@ -136,7 +136,7 @@ static int tta_read_header(AVFormatContext *s)
     st->codecpar->sample_rate = samplerate;
     st->codecpar->bits_per_coded_sample = bps;
 
-    if (s->pb->seekable) {
+    if (s->pb->seekable & AVIO_SEEKABLE_NORMAL) {
         int64_t pos = avio_tell(s->pb);
         ff_ape_parse_tag(s);
         avio_seek(s->pb, pos, SEEK_SET);

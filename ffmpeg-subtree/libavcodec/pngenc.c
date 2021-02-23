@@ -22,7 +22,7 @@
 #include "avcodec.h"
 #include "internal.h"
 #include "bytestream.h"
-#include "huffyuvencdsp.h"
+#include "lossless_videoencdsp.h"
 #include "png.h"
 #include "apng.h"
 
@@ -47,7 +47,7 @@ typedef struct APNGFctlChunk {
 
 typedef struct PNGEncContext {
     AVClass *class;
-    HuffYUVEncDSPContext hdsp;
+    LLVidEncDSPContext llvidencdsp;
 
     uint8_t *bytestream;
     uint8_t *bytestream_start;
@@ -159,7 +159,7 @@ static void sub_left_prediction(PNGEncContext *c, uint8_t *dst, const uint8_t *s
     for (x = 0; x < unaligned_w; x++)
         *dst++ = *src1++ - *src2++;
     size -= unaligned_w;
-    c->hdsp.diff_bytes(dst, src1, src2, size);
+    c->llvidencdsp.diff_bytes(dst, src1, src2, size);
 }
 
 static void png_filter_row(PNGEncContext *c, uint8_t *dst, int filter_type,
@@ -175,7 +175,7 @@ static void png_filter_row(PNGEncContext *c, uint8_t *dst, int filter_type,
         sub_left_prediction(c, dst, src, bpp, size);
         break;
     case PNG_FILTER_VALUE_UP:
-        c->hdsp.diff_bytes(dst, src, top, size);
+        c->llvidencdsp.diff_bytes(dst, src, top, size);
         break;
     case PNG_FILTER_VALUE_AVG:
         for (i = 0; i < bpp; i++)
@@ -741,18 +741,18 @@ static int apng_encode_frame(AVCodecContext *avctx, const AVFrame *pict,
     diffFrame->format = pict->format;
     diffFrame->width = pict->width;
     diffFrame->height = pict->height;
-    if ((ret = av_frame_get_buffer(diffFrame, 32)) < 0)
+    if ((ret = av_frame_get_buffer(diffFrame, 0)) < 0)
         goto fail;
 
     original_bytestream = s->bytestream;
     original_bytestream_end = s->bytestream_end;
 
     temp_bytestream = av_malloc(original_bytestream_end - original_bytestream);
-    temp_bytestream_end = temp_bytestream + (original_bytestream_end - original_bytestream);
     if (!temp_bytestream) {
         ret = AVERROR(ENOMEM);
         goto fail;
     }
+    temp_bytestream_end = temp_bytestream + (original_bytestream_end - original_bytestream);
 
     for (last_fctl_chunk.dispose_op = 0; last_fctl_chunk.dispose_op < 3; ++last_fctl_chunk.dispose_op) {
         // 0: APNG_DISPOSE_OP_NONE
@@ -873,7 +873,7 @@ static int encode_apng(AVCodecContext *avctx, AVPacket *pkt,
         if (!pict)
             return AVERROR(EINVAL);
 
-        s->bytestream = s->extra_data = av_malloc(FF_MIN_BUFFER_SIZE);
+        s->bytestream = s->extra_data = av_malloc(AV_INPUT_BUFFER_MIN_SIZE);
         if (!s->extra_data)
             return AVERROR(ENOMEM);
 
@@ -956,7 +956,7 @@ static int encode_apng(AVCodecContext *avctx, AVPacket *pkt,
                 s->prev_frame->format = pict->format;
                 s->prev_frame->width = pict->width;
                 s->prev_frame->height = pict->height;
-                if ((ret = av_frame_get_buffer(s->prev_frame, 32)) < 0)
+                if ((ret = av_frame_get_buffer(s->prev_frame, 0)) < 0)
                     return ret;
             }
 
@@ -1015,7 +1015,7 @@ FF_DISABLE_DEPRECATION_WARNINGS
 FF_ENABLE_DEPRECATION_WARNINGS
 #endif
 
-    ff_huffyuvencdsp_init(&s->hdsp);
+    ff_llvidencdsp_init(&s->llvidencdsp);
 
 #if FF_API_PRIVATE_OPT
 FF_DISABLE_DEPRECATION_WARNINGS
@@ -1146,7 +1146,7 @@ AVCodec ff_png_encoder = {
     .init           = png_enc_init,
     .close          = png_enc_close,
     .encode2        = encode_png,
-    .capabilities   = AV_CODEC_CAP_FRAME_THREADS | AV_CODEC_CAP_INTRA_ONLY,
+    .capabilities   = AV_CODEC_CAP_FRAME_THREADS,
     .pix_fmts       = (const enum AVPixelFormat[]) {
         AV_PIX_FMT_RGB24, AV_PIX_FMT_RGBA,
         AV_PIX_FMT_RGB48BE, AV_PIX_FMT_RGBA64BE,
@@ -1167,7 +1167,7 @@ AVCodec ff_apng_encoder = {
     .init           = png_enc_init,
     .close          = png_enc_close,
     .encode2        = encode_apng,
-    .capabilities   = CODEC_CAP_DELAY,
+    .capabilities   = AV_CODEC_CAP_DELAY,
     .pix_fmts       = (const enum AVPixelFormat[]) {
         AV_PIX_FMT_RGB24, AV_PIX_FMT_RGBA,
         AV_PIX_FMT_RGB48BE, AV_PIX_FMT_RGBA64BE,

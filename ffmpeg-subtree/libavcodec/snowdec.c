@@ -237,9 +237,9 @@ static void dequantize_slice_buffered(SnowContext *s, slice_buffer * sb, SubBand
         for(x=0; x<w; x++){
             int i= line[x];
             if(i<0){
-                line[x]= -((-i*qmul + qadd)>>(QEXPSHIFT)); //FIXME try different bias
+                line[x]= -((-i*(unsigned)qmul + qadd)>>(QEXPSHIFT)); //FIXME try different bias
             }else if(i>0){
-                line[x]=  (( i*qmul + qadd)>>(QEXPSHIFT));
+                line[x]=  (( i*(unsigned)qmul + qadd)>>(QEXPSHIFT));
             }
         }
     }
@@ -369,7 +369,10 @@ static int decode_header(SnowContext *s){
                 htaps = htaps*2 + 2;
                 p->htaps= htaps;
                 for(i= htaps/2; i; i--){
-                    p->hcoeff[i]= get_symbol(&s->c, s->header_state, 0) * (1-2*(i&1));
+                    unsigned hcoeff = get_symbol(&s->c, s->header_state, 0);
+                    if (hcoeff > 127)
+                        return AVERROR_INVALIDDATA;
+                    p->hcoeff[i]= hcoeff * (1-2*(i&1));
                     sum += p->hcoeff[i];
                 }
                 p->hcoeff[0]= 32-sum;
@@ -502,7 +505,7 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
               );
 
     av_assert0(!s->avmv);
-    if (s->avctx->flags2 & AV_CODEC_FLAG2_EXPORT_MVS) {
+    if (s->avctx->export_side_data & AV_CODEC_EXPORT_DATA_MVS) {
         s->avmv = av_malloc_array(s->b_width * s->b_height, sizeof(AVMotionVector) << (s->block_max_depth*2));
     }
     s->avmv_index = 0;
@@ -529,13 +532,11 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
             }
         }
 
-        {
         for(level=0; level<s->spatial_decomposition_count; level++){
             for(orientation=level ? 1 : 0; orientation<4; orientation++){
                 SubBand *b= &p->band[level][orientation];
                 unpack_coeffs(s, b, b->parent, orientation);
             }
-        }
         }
 
         {

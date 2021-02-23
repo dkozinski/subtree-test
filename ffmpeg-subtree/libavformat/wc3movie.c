@@ -73,7 +73,17 @@ typedef struct Wc3DemuxContext {
 
 } Wc3DemuxContext;
 
-static int wc3_probe(AVProbeData *p)
+static int wc3_read_close(AVFormatContext *s)
+{
+    Wc3DemuxContext *wc3 = s->priv_data;
+
+    if (wc3->vpkt.size > 0)
+        av_packet_unref(&wc3->vpkt);
+
+    return 0;
+}
+
+static int wc3_probe(const AVProbeData *p)
 {
     if (p->buf_size < 12)
         return 0;
@@ -129,9 +139,15 @@ static int wc3_read_header(AVFormatContext *s)
             /* load up the name */
             buffer = av_malloc(size+1);
             if (!buffer)
-                return AVERROR(ENOMEM);
-            if ((ret = avio_read(pb, buffer, size)) != size)
-                return AVERROR(EIO);
+            if (!buffer) {
+                ret = AVERROR(ENOMEM);
+                goto fail;
+            }
+            if ((ret = avio_read(pb, buffer, size)) != size) {
+                av_freep(&buffer);
+                ret =  AVERROR(EIO);
+                goto fail;
+            }
             buffer[size] = 0;
             av_dict_set(&s->metadata, "title", buffer,
                                    AV_DICT_DONT_STRDUP_VAL);
@@ -150,24 +166,28 @@ static int wc3_read_header(AVFormatContext *s)
             break;
 
         default:
-            av_log(s, AV_LOG_ERROR, "  unrecognized WC3 chunk: %c%c%c%c (0x%02X%02X%02X%02X)\n",
-                (uint8_t)fourcc_tag, (uint8_t)(fourcc_tag >> 8), (uint8_t)(fourcc_tag >> 16), (uint8_t)(fourcc_tag >> 24),
-                (uint8_t)fourcc_tag, (uint8_t)(fourcc_tag >> 8), (uint8_t)(fourcc_tag >> 16), (uint8_t)(fourcc_tag >> 24));
-            return AVERROR_INVALIDDATA;
+            av_log(s, AV_LOG_ERROR, "unrecognized WC3 chunk: %s\n",
+                   av_fourcc2str(fourcc_tag));
+            ret = AVERROR_INVALIDDATA;
+            goto fail;
         }
 
         fourcc_tag = avio_rl32(pb);
         /* chunk sizes are 16-bit aligned */
         size = (avio_rb32(pb) + 1) & (~1);
-        if (avio_feof(pb))
-            return AVERROR(EIO);
+        if (avio_feof(pb)) {
+            ret = AVERROR(EIO);
+            goto fail;
+        }
 
     } while (fourcc_tag != BRCH_TAG);
 
     /* initialize the decoder streams */
     st = avformat_new_stream(s, NULL);
-    if (!st)
-        return AVERROR(ENOMEM);
+    if (!st) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
     avpriv_set_pts_info(st, 33, 1, WC3_FRAME_FPS);
     wc3->video_stream_index = st->index;
     st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
@@ -177,8 +197,10 @@ static int wc3_read_header(AVFormatContext *s)
     st->codecpar->height = wc3->height;
 
     st = avformat_new_stream(s, NULL);
-    if (!st)
-        return AVERROR(ENOMEM);
+    if (!st) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
     avpriv_set_pts_info(st, 33, 1, WC3_FRAME_FPS);
     wc3->audio_stream_index = st->index;
     st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
@@ -193,6 +215,9 @@ static int wc3_read_header(AVFormatContext *s)
     st->codecpar->block_align = WC3_AUDIO_BITS * WC3_AUDIO_CHANNELS;
 
     return 0;
+fail:
+    wc3_read_close(s);
+    return ret;
 }
 
 static int wc3_read_packet(AVFormatContext *s,
@@ -242,9 +267,6 @@ static int wc3_read_packet(AVFormatContext *s,
 
         case TEXT_TAG:
             /* subtitle chunk */
-#if 0
-            avio_skip(pb, size);
-#else
             if ((unsigned)size > sizeof(text) || (ret = avio_read(pb, text, size)) != size)
                 ret = AVERROR(EIO);
             else {
@@ -262,7 +284,6 @@ static int wc3_read_packet(AVFormatContext *s,
                     return AVERROR_INVALIDDATA;
                 av_log (s, AV_LOG_DEBUG, "  fronsay: %s\n", &text[i + 1]);
             }
-#endif
             break;
 
         case AUDI_TAG:
@@ -278,9 +299,8 @@ static int wc3_read_packet(AVFormatContext *s,
             break;
 
         default:
-            av_log (s, AV_LOG_ERROR, "  unrecognized WC3 chunk: %c%c%c%c (0x%02X%02X%02X%02X)\n",
-                (uint8_t)fourcc_tag, (uint8_t)(fourcc_tag >> 8), (uint8_t)(fourcc_tag >> 16), (uint8_t)(fourcc_tag >> 24),
-                (uint8_t)fourcc_tag, (uint8_t)(fourcc_tag >> 8), (uint8_t)(fourcc_tag >> 16), (uint8_t)(fourcc_tag >> 24));
+            av_log(s, AV_LOG_ERROR, "unrecognized WC3 chunk: %s\n",
+                   av_fourcc2str(fourcc_tag));
             ret = AVERROR_INVALIDDATA;
             packet_read = 1;
             break;
@@ -288,16 +308,6 @@ static int wc3_read_packet(AVFormatContext *s,
     }
 
     return ret;
-}
-
-static int wc3_read_close(AVFormatContext *s)
-{
-    Wc3DemuxContext *wc3 = s->priv_data;
-
-    if (wc3->vpkt.size > 0)
-        av_packet_unref(&wc3->vpkt);
-
-    return 0;
 }
 
 AVInputFormat ff_wc3_demuxer = {

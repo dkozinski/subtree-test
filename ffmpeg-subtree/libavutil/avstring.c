@@ -232,14 +232,43 @@ int av_strncasecmp(const char *a, const char *b, size_t n)
     return c1 - c2;
 }
 
+char *av_strireplace(const char *str, const char *from, const char *to)
+{
+    char *ret = NULL;
+    const char *pstr2, *pstr = str;
+    size_t tolen = strlen(to), fromlen = strlen(from);
+    AVBPrint pbuf;
+
+    av_bprint_init(&pbuf, 1, AV_BPRINT_SIZE_UNLIMITED);
+    while ((pstr2 = av_stristr(pstr, from))) {
+        av_bprint_append_data(&pbuf, pstr, pstr2 - pstr);
+        pstr = pstr2 + fromlen;
+        av_bprint_append_data(&pbuf, to, tolen);
+    }
+    av_bprint_append_data(&pbuf, pstr, strlen(pstr));
+    if (!av_bprint_is_complete(&pbuf)) {
+        av_bprint_finalize(&pbuf, NULL);
+    } else {
+        av_bprint_finalize(&pbuf, &ret);
+    }
+
+    return ret;
+}
+
 const char *av_basename(const char *path)
 {
-    char *p = strrchr(path, '/');
-
+    char *p;
 #if HAVE_DOS_PATHS
-    char *q = strrchr(path, '\\');
-    char *d = strchr(path, ':');
+    char *q, *d;
+#endif
 
+    if (!path || *path == '\0')
+        return ".";
+
+    p = strrchr(path, '/');
+#if HAVE_DOS_PATHS
+    q = strrchr(path, '\\');
+    d = strchr(path, ':');
     p = FFMAX3(p, q, d);
 #endif
 
@@ -251,11 +280,11 @@ const char *av_basename(const char *path)
 
 const char *av_dirname(char *path)
 {
-    char *p = strrchr(path, '/');
+    char *p = path ? strrchr(path, '/') : NULL;
 
 #if HAVE_DOS_PATHS
-    char *q = strrchr(path, '\\');
-    char *d = strchr(path, ':');
+    char *q = path ? strrchr(path, '\\') : NULL;
+    char *d = path ? strchr(path, ':')  : NULL;
 
     d = d ? d + 1 : d;
 

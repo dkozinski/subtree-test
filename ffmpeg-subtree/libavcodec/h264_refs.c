@@ -573,8 +573,7 @@ void ff_h264_remove_all_refs(H264Context *h)
 
     if (h->short_ref_count && !h->last_pic_for_ec.f->data[0]) {
         ff_h264_unref_picture(h, &h->last_pic_for_ec);
-        if (h->short_ref[0]->f->buf[0])
-            ff_h264_ref_picture(h, &h->last_pic_for_ec, h->short_ref[0]);
+        ff_h264_ref_picture(h, &h->last_pic_for_ec, h->short_ref[0]);
     }
 
     for (i = 0; i < h->short_ref_count; i++) {
@@ -616,6 +615,12 @@ int ff_h264_execute_ref_pic_marking(H264Context *h)
     int pps_ref_count[2] = {0};
     int current_ref_assigned = 0, err = 0;
     H264Picture *av_uninit(pic);
+
+    if (!h->ps.sps) {
+        av_log(h->avctx, AV_LOG_ERROR, "SPS is unset\n");
+        err = AVERROR_INVALIDDATA;
+        goto out;
+    }
 
     if (!h->explicit_ref_marking)
         generate_sliding_window_mmcos(h);
@@ -727,7 +732,7 @@ int ff_h264_execute_ref_pic_marking(H264Context *h)
             for (j = 0; j < MAX_DELAYED_PIC_COUNT; j++)
                 h->last_pocs[j] = INT_MIN;
             break;
-        default: assert(0);
+        default: av_assert0(0);
         }
     }
 
@@ -813,6 +818,7 @@ int ff_h264_execute_ref_pic_marking(H264Context *h)
     if (   err >= 0
         && h->long_ref_count==0
         && (   h->short_ref_count<=2
+            || pps_ref_count[0] <= 2 && pps_ref_count[1] <= 1 && h->avctx->has_b_frames
             || pps_ref_count[0] <= 1 + (h->picture_structure != PICT_FRAME) && pps_ref_count[1] <= 1)
         && pps_ref_count[0]<=2 + (h->picture_structure != PICT_FRAME) + (2*!h->has_recovery_point)
         && h->cur_pic_ptr->f->pict_type == AV_PICTURE_TYPE_I){
@@ -821,6 +827,7 @@ int ff_h264_execute_ref_pic_marking(H264Context *h)
             h->frame_recovered |= FRAME_RECOVERED_SEI;
     }
 
+out:
     return (h->avctx->err_recognition & AV_EF_EXPLODE) ? err : 0;
 }
 
@@ -850,15 +857,6 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
                     mmco[i].short_pic_num =
                         (sl->curr_pic_num - get_ue_golomb_long(gb) - 1) &
                             (sl->max_pic_num - 1);
-#if 0
-                    if (mmco[i].short_pic_num >= h->short_ref_count ||
-                        !h->short_ref[mmco[i].short_pic_num]) {
-                        av_log(s->avctx, AV_LOG_ERROR,
-                               "illegal short ref in memory management control "
-                               "operation %d\n", mmco);
-                        return -1;
-                    }
-#endif
                 }
                 if (opcode == MMCO_SHORT2LONG || opcode == MMCO_LONG2UNUSED ||
                     opcode == MMCO_LONG || opcode == MMCO_SET_MAX_LONG) {
@@ -870,6 +868,7 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
                         av_log(logctx, AV_LOG_ERROR,
                                "illegal long ref in memory management control "
                                "operation %d\n", opcode);
+                        sl->nb_mmco = i;
                         return -1;
                     }
                     mmco[i].long_arg = long_arg;
@@ -879,6 +878,7 @@ int ff_h264_decode_ref_pic_marking(H264SliceContext *sl, GetBitContext *gb,
                     av_log(logctx, AV_LOG_ERROR,
                            "illegal memory management control operation %d\n",
                            opcode);
+                    sl->nb_mmco = i;
                     return -1;
                 }
                 if (opcode == MMCO_END)

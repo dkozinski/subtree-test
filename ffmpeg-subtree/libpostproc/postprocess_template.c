@@ -2548,7 +2548,7 @@ static av_always_inline void RENAME(do_a_deblock)(uint8_t *src, int step, int st
     int64_t dc_mask, eq_mask, both_masks;
     int64_t sums[10*8*2];
     src+= step*3; // src points to begin of the 8x8 Block
-    //{ START_TIMER
+
     __asm__ volatile(
         "movq %0, %%mm7                         \n\t"
         "movq %1, %%mm6                         \n\t"
@@ -3071,17 +3071,11 @@ static av_always_inline void RENAME(do_a_deblock)(uint8_t *src, int step, int st
             : "%"FF_REG_a
         );
     }
-/*if(step==16){
-    STOP_TIMER("step16")
-}else{
-    STOP_TIMER("stepX")
-}
-    } */
 }
 #endif //TEMPLATE_PP_MMX
 
 static void RENAME(postProcess)(const uint8_t src[], int srcStride, uint8_t dst[], int dstStride, int width, int height,
-                                const QP_STORE_T QPs[], int QPStride, int isColor, PPContext *c);
+                                const int8_t QPs[], int QPStride, int isColor, PPContext *c);
 
 /**
  * Copy a block from src to dst and fixes the blacklevel.
@@ -3309,7 +3303,7 @@ static inline void RENAME(prefetcht2)(const void *p)
  * Filter array of bytes (Y or U or V values)
  */
 static void RENAME(postProcess)(const uint8_t src[], int srcStride, uint8_t dst[], int dstStride, int width, int height,
-                                const QP_STORE_T QPs[], int QPStride, int isColor, PPContext *c2)
+                                const int8_t QPs[], int QPStride, int isColor, PPContext *c2)
 {
     DECLARE_ALIGNED(8, PPContext, c)= *c2; //copy to stack for faster access
     int x,y;

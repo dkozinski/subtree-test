@@ -129,7 +129,7 @@ static av_cold int tta_decode_init(AVCodecContext * avctx)
 
     s->avctx = avctx;
 
-    // 30bytes includes TTA1 header
+    // 22 bytes for a TTA1 header
     if (avctx->extradata_size < 22)
         return AVERROR_INVALIDDATA;
 
@@ -163,7 +163,7 @@ static av_cold int tta_decode_init(AVCodecContext * avctx)
         s->data_length = get_bits_long(&gb, 32);
         skip_bits_long(&gb, 32); // CRC32 of header
 
-        if (s->channels == 0) {
+        if (s->channels == 0 || s->channels > 16) {
             av_log(avctx, AV_LOG_ERROR, "Invalid number of channels\n");
             return AVERROR_INVALIDDATA;
         } else if (avctx->sample_rate == 0) {
@@ -285,7 +285,7 @@ static int tta_decode_frame(AVCodecContext *avctx, void *data,
         }
 
         if (k) {
-            if (k > MIN_CACHE_BITS) {
+            if (k > MIN_CACHE_BITS || unary > INT32_MAX >> k) {
                 ret = AVERROR_INVALIDDATA;
                 goto error;
             }
@@ -389,13 +389,6 @@ error:
     return ret;
 }
 
-static int init_thread_copy(AVCodecContext *avctx)
-{
-    TTAContext *s = avctx->priv_data;
-    s->avctx = avctx;
-    return allocate_buffers(avctx);
-}
-
 static av_cold int tta_decode_close(AVCodecContext *avctx) {
     TTAContext *s = avctx->priv_data;
 
@@ -430,7 +423,6 @@ AVCodec ff_tta_decoder = {
     .init           = tta_decode_init,
     .close          = tta_decode_close,
     .decode         = tta_decode_frame,
-    .init_thread_copy = ONLY_IF_THREADS_ENABLED(init_thread_copy),
     .capabilities   = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS,
     .priv_class     = &tta_decoder_class,
 };
