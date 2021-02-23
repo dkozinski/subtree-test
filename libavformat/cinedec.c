@@ -56,7 +56,7 @@ enum {
 #define CFA_BLGRAY  0x20000000U
 #define CFA_BRGRAY  0x10000000U
 
-static int cine_read_probe(AVProbeData *p)
+static int cine_read_probe(const AVProbeData *p)
 {
     int HeaderSize;
     if (p->buf[0] == 'C' && p->buf[1] == 'I' &&  // Type
@@ -168,6 +168,10 @@ static int cine_read_header(AVFormatContext *avctx)
     avio_skip(pb, 616); // Binning .. bFlipH
     if (!avio_rl32(pb) ^ vflip) {
         st->codecpar->extradata  = av_strdup("BottomUp");
+        if (!st->codecpar->extradata) {
+            st->codecpar->extradata_size = 0;
+            return AVERROR(ENOMEM);
+        }
         st->codecpar->extradata_size  = 9;
     }
 
@@ -311,7 +315,7 @@ static int cine_read_seek(AVFormatContext *avctx, int stream_index, int64_t time
     if ((flags & AVSEEK_FLAG_FRAME) || (flags & AVSEEK_FLAG_BYTE))
         return AVERROR(ENOSYS);
 
-    if (!avctx->pb->seekable)
+    if (!(avctx->pb->seekable & AVIO_SEEKABLE_NORMAL))
         return AVERROR(EIO);
 
     cine->pts = timestamp;

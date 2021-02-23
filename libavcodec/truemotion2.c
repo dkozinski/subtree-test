@@ -112,9 +112,13 @@ typedef struct TM2Huff {
     int *lens; ///< codelengths
 } TM2Huff;
 
+/**
+ *
+ * @returns the length of the longest code or an AVERROR code
+ */
 static int tm2_read_tree(TM2Context *ctx, uint32_t prefix, int length, TM2Huff *huff)
 {
-    int ret;
+    int ret, ret2;
     if (length > huff->max_bits) {
         av_log(ctx->avctx, AV_LOG_ERROR, "Tree exceeded its given depth (%i)\n",
                huff->max_bits);
@@ -133,14 +137,14 @@ static int tm2_read_tree(TM2Context *ctx, uint32_t prefix, int length, TM2Huff *
         huff->bits[huff->num] = prefix;
         huff->lens[huff->num] = length;
         huff->num++;
-        return 0;
+        return length;
     } else { /* non-terminal node */
-        if ((ret = tm2_read_tree(ctx, prefix << 1, length + 1, huff)) < 0)
-            return ret;
+        if ((ret2 = tm2_read_tree(ctx, prefix << 1, length + 1, huff)) < 0)
+            return ret2;
         if ((ret = tm2_read_tree(ctx, (prefix << 1) | 1, length + 1, huff)) < 0)
             return ret;
     }
-    return 0;
+    return FFMAX(ret, ret2);
 }
 
 static int tm2_build_huff_table(TM2Context *ctx, TM2Codes *code)
@@ -151,7 +155,7 @@ static int tm2_build_huff_table(TM2Context *ctx, TM2Codes *code)
     huff.val_bits = get_bits(&ctx->gb, 5);
     huff.max_bits = get_bits(&ctx->gb, 5);
     huff.min_bits = get_bits(&ctx->gb, 5);
-    huff.nodes    = get_bits_long(&ctx->gb, 17);
+    huff.nodes    = get_bits(&ctx->gb, 17);
     huff.num      = 0;
 
     /* check for correct codes parameters */
@@ -183,6 +187,11 @@ static int tm2_build_huff_table(TM2Context *ctx, TM2Codes *code)
 
     res = tm2_read_tree(ctx, 0, 0, &huff);
 
+    if (res >= 0 && res != huff.max_bits) {
+        av_log(ctx->avctx, AV_LOG_ERROR, "Got less bits than expected: %i of %i\n",
+               res, huff.max_bits);
+        res = AVERROR_INVALIDDATA;
+    }
     if (huff.num != huff.max_num) {
         av_log(ctx->avctx, AV_LOG_ERROR, "Got less codes than expected: %i of %i\n",
                huff.num, huff.max_num);
@@ -377,6 +386,10 @@ static int tm2_read_stream(TM2Context *ctx, const uint8_t *buf, int stream_id, i
             }
         }
     } else {
+        if (len < 0) {
+            ret = AVERROR_INVALIDDATA;
+            goto end;
+        }
         for (i = 0; i < toks; i++) {
             ctx->tokens[stream_id][i] = codes.recode[0];
             if (stream_id <= TM2_MOT && ctx->tokens[stream_id][i] >= TM2_DELTAS) {
@@ -430,7 +443,7 @@ static inline int GET_TOK(TM2Context *ctx,int type)
     clast = ctx->clast + bx * 4;
 
 #define TM2_INIT_POINTERS_2() \
-    int *Yo, *Uo, *Vo;\
+    unsigned *Yo, *Uo, *Vo;\
     int oYstride, oUstride, oVstride;\
 \
     TM2_INIT_POINTERS();\
@@ -603,7 +616,7 @@ static inline void tm2_null_res_block(TM2Context *ctx, AVFrame *pic, int bx, int
     for (i = 0; i < 16; i++)
         deltas[i] = 0;
 
-    ct = ctx->D[0] + ctx->D[1] + ctx->D[2] + ctx->D[3];
+    ct = (unsigned)ctx->D[0] + ctx->D[1] + ctx->D[2] + ctx->D[3];
 
     if (bx > 0)
         left = last[-1] - (unsigned)ct;
@@ -674,8 +687,8 @@ static inline void tm2_update_block(TM2Context *ctx, AVFrame *pic, int bx, int b
     /* update chroma */
     for (j = 0; j < 2; j++) {
         for (i = 0; i < 2; i++) {
-            U[i] = Uo[i] + (unsigned)GET_TOK(ctx, TM2_UPD);
-            V[i] = Vo[i] + (unsigned)GET_TOK(ctx, TM2_UPD);
+            U[i] = Uo[i] + GET_TOK(ctx, TM2_UPD);
+            V[i] = Vo[i] + GET_TOK(ctx, TM2_UPD);
         }
         U  += Ustride;
         V  += Vstride;
@@ -688,10 +701,10 @@ static inline void tm2_update_block(TM2Context *ctx, AVFrame *pic, int bx, int b
     TM2_RECALC_BLOCK(V, Vstride, (clast + 2), (ctx->CD + 2));
 
     /* update deltas */
-    ctx->D[0] = (unsigned)Yo[3] - last[3];
-    ctx->D[1] = (unsigned)Yo[3 + oYstride] - Yo[3];
-    ctx->D[2] = (unsigned)Yo[3 + oYstride * 2] - Yo[3 + oYstride];
-    ctx->D[3] = (unsigned)Yo[3 + oYstride * 3] - Yo[3 + oYstride * 2];
+    ctx->D[0] = Yo[3] - last[3];
+    ctx->D[1] = Yo[3 + oYstride] - Yo[3];
+    ctx->D[2] = Yo[3 + oYstride * 2] - Yo[3 + oYstride];
+    ctx->D[3] = Yo[3 + oYstride * 3] - Yo[3 + oYstride * 2];
 
     for (j = 0; j < 4; j++) {
         d = last[3];
@@ -902,7 +915,7 @@ static int decode_frame(AVCodecContext *avctx,
         return AVERROR(ENOMEM);
     }
 
-    if ((ret = ff_reget_buffer(avctx, p)) < 0)
+    if ((ret = ff_reget_buffer(avctx, p, 0)) < 0)
         return ret;
 
     l->bdsp.bswap_buf((uint32_t *) l->buffer, (const uint32_t *) buf,

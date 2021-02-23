@@ -46,14 +46,14 @@ static int64_t parse_timecode(const uint8_t *buf, int64_t packet_time) {
     return ms - packet_time;
 }
 
-static int decode_frame(AVCodecContext *avctx, void *data, int *data_size,
+static int decode_frame(AVCodecContext *avctx, void *data, int *got_sub_ptr,
                         AVPacket *avpkt) {
     const uint8_t *buf = avpkt->data;
     int buf_size = avpkt->size;
     AVSubtitle *sub = data;
     const uint8_t *buf_end = buf + buf_size;
     uint8_t *bitmap;
-    int w, h, x, y, i;
+    int w, h, x, y, i, ret;
     int64_t packet_time = 0;
     GetBitContext gb;
     int has_alpha = avctx->codec_tag == MKTAG('D','X','S','A');
@@ -90,6 +90,9 @@ static int decode_frame(AVCodecContext *avctx, void *data, int *data_size,
     // however there are files in which it has a bogus value and thus
     // we just ignore it
     bytestream_get_le16(&buf);
+
+    if (buf_end - buf < h + 3*4)
+        return AVERROR_INVALIDDATA;
 
     // allocate sub and set values
     sub->rects =  av_mallocz(sizeof(*sub->rects));
@@ -145,7 +148,8 @@ FF_ENABLE_DEPRECATION_WARNINGS
 #endif
 
     // process RLE-compressed data
-    init_get_bits(&gb, buf, (buf_end - buf) * 8);
+    if ((ret = init_get_bits8(&gb, buf, buf_end - buf)) < 0)
+        return ret;
     bitmap = sub->rects[0]->data[0];
     for (y = 0; y < h; y++) {
         // interlaced: do odd lines
@@ -165,7 +169,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
         bitmap += w;
         align_get_bits(&gb);
     }
-    *data_size = 1;
+    *got_sub_ptr = 1;
     return buf_size;
 }
 

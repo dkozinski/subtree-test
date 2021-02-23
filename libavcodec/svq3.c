@@ -43,6 +43,8 @@
 #include <inttypes.h>
 
 #include "libavutil/attributes.h"
+#include "libavutil/crc.h"
+
 #include "internal.h"
 #include "avcodec.h"
 #include "mpegutils.h"
@@ -629,11 +631,6 @@ static av_always_inline void hl_decode_mb_idct_luma(SVQ3Context *s,
     }
 }
 
-static av_always_inline int dctcoef_get(int16_t *mb, int index)
-{
-    return AV_RN16A(mb + index);
-}
-
 static av_always_inline void hl_decode_mb_predict_luma(SVQ3Context *s,
                                                        int mb_type,
                                                        const int *block_offset,
@@ -1041,25 +1038,24 @@ static int svq3_decode_slice_header(AVCodecContext *avctx)
         slice_bits   = slice_length * 8;
         slice_bytes  = slice_length + length - 1;
 
-        if (8LL*slice_bytes > get_bits_left(&s->gb)) {
-            av_log(avctx, AV_LOG_ERROR, "slice after bitstream end\n");
-            return -1;
-        }
-
         skip_bits(&s->gb, 8);
 
         av_fast_malloc(&s->slice_buf, &s->slice_size, slice_bytes + AV_INPUT_BUFFER_PADDING_SIZE);
         if (!s->slice_buf)
             return AVERROR(ENOMEM);
 
+        if (slice_bytes * 8LL > get_bits_left(&s->gb)) {
+            av_log(avctx, AV_LOG_ERROR, "slice after bitstream end\n");
+            return AVERROR_INVALIDDATA;
+        }
         memcpy(s->slice_buf, s->gb.buffer + s->gb.index / 8, slice_bytes);
 
+        if (s->watermark_key) {
+            uint32_t header = AV_RL32(&s->slice_buf[1]);
+            AV_WL32(&s->slice_buf[1], header ^ s->watermark_key);
+        }
         init_get_bits(&s->gb_slice, s->slice_buf, slice_bits);
 
-        if (s->watermark_key) {
-            uint32_t header = AV_RL32(&s->gb_slice.buffer[1]);
-            AV_WL32(&s->gb_slice.buffer[1], header ^ s->watermark_key);
-        }
         if (length > 0) {
             memmove(s->slice_buf, &s->slice_buf[slice_length], length - 1);
         }
@@ -1076,8 +1072,9 @@ static int svq3_decode_slice_header(AVCodecContext *avctx)
     if ((header & 0x9F) == 2) {
         i = (s->mb_num < 64) ? 6 : (1 + av_log2(s->mb_num - 1));
         get_bits(&s->gb_slice, i);
-    } else {
-        skip_bits1(&s->gb_slice);
+    } else if (get_bits1(&s->gb_slice)) {
+        avpriv_report_missing_feature(s->avctx, "Media key encryption");
+        return AVERROR_PATCHWELCOME;
     }
 
     s->slice_num      = get_bits(&s->gb_slice, 8);
@@ -1298,7 +1295,8 @@ static av_cold int svq3_decode_init(AVCodecContext *avctx)
                 ret = -1;
                 goto fail;
             }
-            s->watermark_key = ff_svq1_packet_checksum(buf, buf_len, 0);
+            s->watermark_key = av_bswap16(av_crc(av_crc_get_table(AV_CRC_16_CCITT), 0, buf, buf_len));
+
             s->watermark_key = s->watermark_key << 16 | s->watermark_key;
             av_log(avctx, AV_LOG_DEBUG,
                    "watermark key %#"PRIx32"\n", s->watermark_key);
@@ -1560,7 +1558,7 @@ static int svq3_decode_frame(AVCodecContext *avctx, void *data,
                         return -1;
                 }
                 if (s->slice_type != s->pict_type) {
-                    avpriv_request_sample(avctx, "non constant slice type\n");
+                    avpriv_request_sample(avctx, "non constant slice type");
                 }
                 /* TODO: support s->mb_skip_run */
             }

@@ -288,7 +288,7 @@ static int extract_header(AVCodecContext *const avctx,
             if (s->bpp > 8) {
                 av_log(avctx, AV_LOG_ERROR, "Invalid number of hold bits for HAM: %u\n", s->ham);
                 return AVERROR_INVALIDDATA;
-            } if (s->ham != (s->bpp > 6 ? 6 : 4)) {
+            } else if (s->ham != (s->bpp > 6 ? 6 : 4)) {
                 av_log(avctx, AV_LOG_ERROR, "Invalid number of hold bits for HAM: %u, BPP: %u\n", s->ham, s->bpp);
                 return AVERROR_INVALIDDATA;
             }
@@ -432,7 +432,7 @@ static av_cold int decode_init(AVCodecContext *avctx)
     if ((err = av_image_check_size(avctx->width, avctx->height, 0, avctx)))
         return err;
     s->planesize = FFALIGN(avctx->width, 16) >> 3; // Align plane size in bits to word-boundary
-    s->planebuf  = av_malloc(s->planesize + AV_INPUT_BUFFER_PADDING_SIZE);
+    s->planebuf  = av_malloc(s->planesize * avctx->height + AV_INPUT_BUFFER_PADDING_SIZE);
     if (!s->planebuf)
         return AVERROR(ENOMEM);
 
@@ -576,6 +576,76 @@ static int decode_byterun(uint8_t *dst, int dst_size,
         av_log(NULL, AV_LOG_WARNING, "decode_byterun ended before plane size\n");
         memset(dst+x, 0, dst_size - x);
     }
+    return bytestream2_tell(gb);
+}
+
+static int decode_byterun2(uint8_t *dst, int height, int line_size,
+                           GetByteContext *gb)
+{
+    GetByteContext cmds;
+    unsigned count;
+    int i, y_pos = 0, x_pos = 0;
+
+    if (bytestream2_get_be32(gb) != MKBETAG('V', 'D', 'A', 'T'))
+        return 0;
+
+    bytestream2_skip(gb, 4);
+    count = bytestream2_get_be16(gb) - 2;
+    if (bytestream2_get_bytes_left(gb) < count)
+        return 0;
+
+    bytestream2_init(&cmds, gb->buffer, count);
+    bytestream2_skip(gb, count);
+
+    for (i = 0; i < count && x_pos < line_size; i++) {
+        int8_t cmd = bytestream2_get_byte(&cmds);
+        int l, r;
+
+        if (cmd == 0) {
+            l = bytestream2_get_be16(gb);
+            while (l-- > 0 && x_pos < line_size) {
+                dst[x_pos + y_pos   * line_size    ] = bytestream2_get_byte(gb);
+                dst[x_pos + y_pos++ * line_size + 1] = bytestream2_get_byte(gb);
+                if (y_pos >= height) {
+                    y_pos  = 0;
+                    x_pos += 2;
+                }
+            }
+        } else if (cmd < 0) {
+            l = -cmd;
+            while (l-- > 0 && x_pos < line_size) {
+                dst[x_pos + y_pos   * line_size    ] = bytestream2_get_byte(gb);
+                dst[x_pos + y_pos++ * line_size + 1] = bytestream2_get_byte(gb);
+                if (y_pos >= height) {
+                    y_pos  = 0;
+                    x_pos += 2;
+                }
+            }
+        } else if (cmd == 1) {
+            l = bytestream2_get_be16(gb);
+            r = bytestream2_get_be16(gb);
+            while (l-- > 0 && x_pos < line_size) {
+                dst[x_pos + y_pos   * line_size    ] = r >> 8;
+                dst[x_pos + y_pos++ * line_size + 1] = r & 0xFF;
+                if (y_pos >= height) {
+                    y_pos  = 0;
+                    x_pos += 2;
+                }
+            }
+        } else {
+            l = cmd;
+            r = bytestream2_get_be16(gb);
+            while (l-- > 0 && x_pos < line_size) {
+                dst[x_pos + y_pos   * line_size    ] = r >> 8;
+                dst[x_pos + y_pos++ * line_size + 1] = r & 0xFF;
+                if (y_pos >= height) {
+                    y_pos  = 0;
+                    x_pos += 2;
+                }
+            }
+        }
+    }
+
     return bytestream2_tell(gb);
 }
 
@@ -888,7 +958,7 @@ static void decode_delta_j(uint8_t *dst,
                 offset = bytestream2_get_be16(&gb);
 
                 if (cols * bpp == 0 || bytestream2_get_bytes_left(&gb) < cols * bpp) {
-                    av_log(NULL, AV_LOG_ERROR, "cols*bpp is invalid (%d*%d)", cols, bpp);
+                    av_log(NULL, AV_LOG_ERROR, "cols*bpp is invalid (%"PRId32"*%d)", cols, bpp);
                     return;
                 }
 
@@ -936,7 +1006,7 @@ static void decode_delta_j(uint8_t *dst,
                         unsigned noffset = offset + (r * pitch) + d * planepitch;
 
                         if (!bytes || bytestream2_get_bytes_left(&gb) < bytes) {
-                            av_log(NULL, AV_LOG_ERROR, "bytes %d is invalid", bytes);
+                            av_log(NULL, AV_LOG_ERROR, "bytes %"PRId32" is invalid", bytes);
                             return;
                         }
 
@@ -1292,6 +1362,9 @@ static void decode_delta_d(uint8_t *dst,
         bytestream2_init(&gb, buf + ofssrc, buf_end - (buf + ofssrc));
 
         entries = bytestream2_get_be32(&gb);
+        if (entries * 8LL > bytestream2_get_bytes_left(&gb))
+            return;
+
         while (entries && bytestream2_get_bytes_left(&gb) >= 8) {
             int32_t opcode  = bytestream2_get_be32(&gb);
             unsigned offset = bytestream2_get_be32(&gb);
@@ -1578,6 +1651,8 @@ static int decode_frame(AVCodecContext *avctx,
                 }
             } else
                 return unsupported(avctx);
+        } else {
+            return unsupported(avctx);
         }
         break;
     case 0x1:
@@ -1652,6 +1727,47 @@ static int decode_frame(AVCodecContext *avctx,
                 decode_deep_rle32(frame->data[0], buf, buf_size, avctx->width, avctx->height, frame->linesize[0]);
             else
                 return unsupported(avctx);
+        } else if (avctx->codec_tag == MKTAG('A', 'C', 'B', 'M')) {
+            if (avctx->pix_fmt == AV_PIX_FMT_PAL8 || avctx->pix_fmt == AV_PIX_FMT_GRAY8) {
+                memset(frame->data[0], 0, avctx->height * frame->linesize[0]);
+                for (plane = 0; plane < s->bpp; plane++) {
+                    for (y = 0; y < avctx->height && buf < buf_end; y++) {
+                        uint8_t *row = &frame->data[0][y * frame->linesize[0]];
+                        decodeplane8(row, buf, FFMIN(s->planesize, buf_end - buf), plane);
+                        buf += s->planesize;
+                    }
+                }
+            } else if (s->ham) { // HAM to AV_PIX_FMT_BGR32
+                memset(frame->data[0], 0, avctx->height * frame->linesize[0]);
+                for (y = 0; y < avctx->height; y++) {
+                    uint8_t *row = &frame->data[0][y * frame->linesize[0]];
+                    memset(s->ham_buf, 0, s->planesize * 8);
+                    for (plane = 0; plane < s->bpp; plane++) {
+                        const uint8_t * start = buf + (plane * avctx->height + y) * s->planesize;
+                        if (start >= buf_end)
+                            break;
+                        decodeplane8(s->ham_buf, start, FFMIN(s->planesize, buf_end - start), plane);
+                    }
+                    decode_ham_plane32((uint32_t *)row, s->ham_buf, s->ham_palbuf, s->planesize);
+                }
+            } else {
+                return unsupported(avctx);
+            }
+        } else {
+            return unsupported(avctx);
+        }
+        break;
+    case 0x2:
+        if (avctx->codec_tag == MKTAG('I', 'L', 'B', 'M') && avctx->pix_fmt == AV_PIX_FMT_PAL8) {
+            for (plane = 0; plane < s->bpp; plane++) {
+                decode_byterun2(s->planebuf, avctx->height, s->planesize, gb);
+                for (y = 0; y < avctx->height; y++) {
+                    uint8_t *row = &frame->data[0][y * frame->linesize[0]];
+                    decodeplane8(row, s->planebuf + s->planesize * y, s->planesize, plane);
+                }
+            }
+        } else {
+            return unsupported(avctx);
         }
         break;
     case 0x4:
@@ -1796,6 +1912,7 @@ AVCodec ff_iff_ilbm_decoder = {
     .init           = decode_init,
     .close          = decode_end,
     .decode         = decode_frame,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
     .capabilities   = AV_CODEC_CAP_DR1,
 };
 #endif

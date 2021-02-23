@@ -26,6 +26,7 @@
 #ifndef AVCODEC_VP56_H
 #define AVCODEC_VP56_H
 
+#include "avcodec.h"
 #include "get_bits.h"
 #include "hpeldsp.h"
 #include "bytestream.h"
@@ -72,7 +73,7 @@ typedef struct VP56mv {
 typedef void (*VP56ParseVectorAdjustment)(VP56Context *s,
                                           VP56mv *vect);
 typedef void (*VP56Filter)(VP56Context *s, uint8_t *dst, uint8_t *src,
-                           int offset1, int offset2, int stride,
+                           int offset1, int offset2, ptrdiff_t stride,
                            VP56mv mv, int mask, int select, int luma);
 typedef int  (*VP56ParseCoeff)(VP56Context *s);
 typedef void (*VP56DefaultModelsInit)(VP56Context *s);
@@ -105,6 +106,7 @@ typedef struct VP56Macroblock {
 typedef struct VP56Model {
     uint8_t coeff_reorder[64];       /* used in vp6 only */
     uint8_t coeff_index_to_pos[64];  /* used in vp6 only */
+    uint8_t coeff_index_to_idct_selector[64]; /* used in vp6 only */
     uint8_t vector_sig[2];           /* delta sign */
     uint8_t vector_dct[2];           /* delta coding types */
     uint8_t vector_pdi[2][2];        /* predefined delta init */
@@ -157,6 +159,7 @@ struct vp56_context {
     VP56mb mb_type;
     VP56Macroblock *macroblocks;
     DECLARE_ALIGNED(16, int16_t, block_coeff)[6][64];
+    int idct_selector[6];
 
     /* motion vectors */
     VP56mv mv[6];  /* vectors for each block in MB */
@@ -170,6 +173,7 @@ struct vp56_context {
     int filter_mode;
     int max_vector_length;
     int sample_variance_threshold;
+    DECLARE_ALIGNED(8, int, bounding_values_array)[256];
 
     uint8_t coeff_ctx[4][64];              /* used in vp5 only */
     uint8_t coeff_ctx_last[4];             /* used in vp5 only */
@@ -180,7 +184,7 @@ struct vp56_context {
     int flip;  /* are we flipping ? */
     int frbi;  /* first row block index in MB */
     int srbi;  /* second row block index in MB */
-    int stride[4];  /* stride for each plan */
+    ptrdiff_t stride[4];  /* stride for each plan */
 
     const uint8_t *vp56_coord_div;
     VP56ParseVectorAdjustment parse_vector_adjustment;

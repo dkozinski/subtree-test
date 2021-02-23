@@ -136,7 +136,7 @@ typedef struct MSS4Context {
     uint16_t   quant_mat[2][64];
 
     int        *prev_dc[3];
-    int        dc_stride[3];
+    ptrdiff_t  dc_stride[3];
     int        dc_cache[4][4];
 
     int        prev_vec[3][4];
@@ -558,7 +558,7 @@ static int mss4_decode_frame(AVCodecContext *avctx, void *data, int *got_frame,
     if (frame_type != SKIP_FRAME && 8*buf_size < 8*HEADER_SIZE + mb_width*mb_height)
         return AVERROR_INVALIDDATA;
 
-    if ((ret = ff_reget_buffer(avctx, c->pic)) < 0)
+    if ((ret = ff_reget_buffer(avctx, c->pic, 0)) < 0)
         return ret;
     c->pic->key_frame = (frame_type == INTRA_FRAME);
     c->pic->pict_type = (frame_type == INTRA_FRAME) ? AV_PICTURE_TYPE_I

@@ -56,7 +56,7 @@ static int ir2_decode_plane(Ir2Context *ctx, int width, int height, uint8_t *dst
     int j;
     int out = 0;
 
-    if (width & 1)
+    if ((width & 1) || width * height / (2*(IR2_CODES - 0x7F)) > get_bits_left(&ctx->gb))
         return AVERROR_INVALIDDATA;
 
     /* first line contain absolute values, other lines contain deltas */
@@ -161,7 +161,7 @@ static int ir2_decode_frame(AVCodecContext *avctx,
     int start, ret;
     int ltab, ctab;
 
-    if ((ret = ff_reget_buffer(avctx, p)) < 0)
+    if ((ret = ff_reget_buffer(avctx, p, 0)) < 0)
         return ret;
 
     start = 48; /* hardcoded for now */

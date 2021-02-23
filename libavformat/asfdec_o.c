@@ -147,7 +147,7 @@ typedef struct ASFContext {
 static int detect_unknown_subobject(AVFormatContext *s, int64_t offset, int64_t size);
 static const GUIDParseTable *find_guid(ff_asf_guid guid);
 
-static int asf_probe(AVProbeData *pd)
+static int asf_probe(const AVProbeData *pd)
 {
     /* check file header */
     if (!ff_guidcmp(pd->buf, &ff_asf_header))
@@ -244,6 +244,9 @@ static int asf_read_marker(AVFormatContext *s, const GUIDParseTable *g)
         avio_skip(pb, 4); // send time
         avio_skip(pb, 4); // flags
         len = avio_rl32(pb);
+
+        if (avio_feof(pb))
+            return AVERROR_INVALIDDATA;
 
         if ((ret = avio_get_str16le(pb, len, name,
                                     sizeof(name))) < len)
@@ -460,8 +463,10 @@ static void get_id3_tag(AVFormatContext *s, int len)
     ID3v2ExtraMeta *id3v2_extra_meta = NULL;
 
     ff_id3v2_read(s, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta, len);
-    if (id3v2_extra_meta)
-        ff_id3v2_parse_apic(s, &id3v2_extra_meta);
+    if (id3v2_extra_meta) {
+        ff_id3v2_parse_apic(s, id3v2_extra_meta);
+        ff_id3v2_parse_chapters(s, id3v2_extra_meta);
+    }
     ff_id3v2_free_extra_meta(&id3v2_extra_meta);
 }
 
@@ -963,7 +968,7 @@ static int asf_read_data(AVFormatContext *s, const GUIDParseTable *g)
                size, asf->nb_packets);
     avio_skip(pb, 2); // skip reserved field
     asf->first_packet_offset = avio_tell(pb);
-    if (pb->seekable && !(asf->b_flags & ASF_FLAG_BROADCAST))
+    if ((pb->seekable & AVIO_SEEKABLE_NORMAL) && !(asf->b_flags & ASF_FLAG_BROADCAST))
         align_position(pb, asf->offset, asf->data_size);
 
     return 0;
@@ -977,7 +982,8 @@ static int asf_read_simple_index(AVFormatContext *s, const GUIDParseTable *g)
     uint64_t interval; // index entry time interval in 100 ns units, usually it's 1s
     uint32_t pkt_num, nb_entries;
     int32_t prev_pkt_num = -1;
-    int i, ret;
+    int i;
+    int64_t offset;
     uint64_t size = avio_rl64(pb);
 
     // simple index objects should be ordered by stream number, this loop tries to find
@@ -999,10 +1005,10 @@ static int asf_read_simple_index(AVFormatContext *s, const GUIDParseTable *g)
     nb_entries = avio_rl32(pb);
     for (i = 0; i < nb_entries; i++) {
         pkt_num = avio_rl32(pb);
-        ret = avio_skip(pb, 2);
-        if (ret < 0) {
+        offset = avio_skip(pb, 2);
+        if (offset < 0) {
             av_log(s, AV_LOG_ERROR, "Skipping failed in asf_read_simple_index.\n");
-            return ret;
+            return offset;
         }
         if (prev_pkt_num != pkt_num) {
             av_add_index_entry(st, asf->first_packet_offset + asf->packet_size *
@@ -1162,7 +1168,7 @@ static int asf_read_replicated_data(AVFormatContext *s, ASFPacket *asf_pkt)
     } else
         avio_skip(pb, 4); // reading of media object size is already done
     asf_pkt->dts = avio_rl32(pb); // read presentation time
-    if (asf->rep_data_len && (asf->rep_data_len >= 8))
+    if (asf->rep_data_len >= 8)
         avio_skip(pb, asf->rep_data_len - 8); // skip replicated data
 
     return 0;
@@ -1488,7 +1494,7 @@ static int asf_read_packet(AVFormatContext *s, AVPacket *pkt)
             asf->return_subpayload = 0;
             return 0;
         }
-        for (i = 0; i < s->nb_streams; i++) {
+        for (i = 0; i < asf->nb_streams; i++) {
             ASFPacket *asf_pkt = &asf->asf_st[i]->pkt;
             if (asf_pkt && !asf_pkt->size_left && asf_pkt->data_size) {
                 if (asf->asf_st[i]->span > 1 &&
@@ -1676,6 +1682,9 @@ static int detect_unknown_subobject(AVFormatContext *s, int64_t offset, int64_t 
     ff_asf_guid guid;
     int ret;
 
+    if (offset > INT64_MAX - size)
+        return AVERROR_INVALIDDATA;
+
     while (avio_tell(pb) <= offset + size) {
         if (avio_tell(pb) == asf->offset)
             break;
@@ -1741,7 +1750,9 @@ static int asf_read_header(AVFormatContext *s)
             size = avio_rl64(pb);
             align_position(pb, asf->offset, size);
         }
-        if (asf->data_reached && (!pb->seekable || (asf->b_flags & ASF_FLAG_BROADCAST)))
+        if (asf->data_reached &&
+            (!(pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+             (asf->b_flags & ASF_FLAG_BROADCAST)))
             break;
     }
 
@@ -1750,7 +1761,7 @@ static int asf_read_header(AVFormatContext *s)
         ret = AVERROR_INVALIDDATA;
         goto failed;
     }
-    if (pb->seekable)
+    if (pb->seekable & AVIO_SEEKABLE_NORMAL)
         avio_seek(pb, asf->first_packet_offset, SEEK_SET);
 
     for (i = 0; i < asf->nb_streams; i++) {

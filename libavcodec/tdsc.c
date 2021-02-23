@@ -343,7 +343,6 @@ static int tdsc_decode_jpeg_tile(AVCodecContext *avctx, int tile_size,
 {
     TDSCContext *ctx = avctx->priv_data;
     AVPacket jpkt;
-    int got_frame = 0;
     int ret;
 
     /* Prepare a packet and send to the MJPEG decoder */
@@ -351,12 +350,16 @@ static int tdsc_decode_jpeg_tile(AVCodecContext *avctx, int tile_size,
     jpkt.data = ctx->tilebuffer;
     jpkt.size = tile_size;
 
-    ret = avcodec_decode_video2(ctx->jpeg_avctx, ctx->jpgframe,
-                                &got_frame, &jpkt);
-    if (ret < 0 || !got_frame || ctx->jpgframe->format != AV_PIX_FMT_YUVJ420P) {
+    ret = avcodec_send_packet(ctx->jpeg_avctx, &jpkt);
+    if (ret < 0) {
+        av_log(avctx, AV_LOG_ERROR, "Error submitting a packet for decoding\n");
+        return ret;
+    }
+
+    ret = avcodec_receive_frame(ctx->jpeg_avctx, ctx->jpgframe);
+    if (ret < 0 || ctx->jpgframe->format != AV_PIX_FMT_YUVJ420P) {
         av_log(avctx, AV_LOG_ERROR,
-               "JPEG decoding error (%d) for (%d) frame.\n",
-               ret, got_frame);
+               "JPEG decoding error (%d).\n", ret);
 
         /* Normally skip, error if explode */
         if (avctx->err_recognition & AV_EF_EXPLODE)
@@ -387,7 +390,7 @@ static int tdsc_decode_tiles(AVCodecContext *avctx, int number_tiles)
     for (i = 0; i < number_tiles; i++) {
         int tile_size;
         int tile_mode;
-        int x, y, w, h;
+        int x, y, x2, y2, w, h;
         int ret;
 
         if (bytestream2_get_bytes_left(&ctx->gbc) < 4 ||
@@ -405,20 +408,19 @@ static int tdsc_decode_tiles(AVCodecContext *avctx, int number_tiles)
         bytestream2_skip(&ctx->gbc, 4); // unknown
         x = bytestream2_get_le32(&ctx->gbc);
         y = bytestream2_get_le32(&ctx->gbc);
-        w = bytestream2_get_le32(&ctx->gbc) - x;
-        h = bytestream2_get_le32(&ctx->gbc) - y;
+        x2 = bytestream2_get_le32(&ctx->gbc);
+        y2 = bytestream2_get_le32(&ctx->gbc);
 
-        if (x >= ctx->width || y >= ctx->height) {
+        if (x < 0 || y < 0 || x2 <= x || y2 <= y ||
+            x2 > ctx->width || y2 > ctx->height
+        ) {
             av_log(avctx, AV_LOG_ERROR,
-                   "Invalid tile position (%d.%d outside %dx%d).\n",
-                   x, y, ctx->width, ctx->height);
+                   "Invalid tile position (%d.%d %d.%d outside %dx%d).\n",
+                   x, y, x2, y2, ctx->width, ctx->height);
             return AVERROR_INVALIDDATA;
         }
-        if (x + w > ctx->width || y + h > ctx->height) {
-            av_log(avctx, AV_LOG_ERROR,
-                   "Invalid tile size %dx%d\n", w, h);
-            return AVERROR_INVALIDDATA;
-        }
+        w = x2 - x;
+        h = y2 - y;
 
         ret = av_reallocp(&ctx->tilebuffer, tile_size);
         if (!ctx->tilebuffer)
@@ -481,7 +483,7 @@ static int tdsc_parse_tdsf(AVCodecContext *avctx, int number_tiles)
 
     /* Allocate the reference frame if not already done or on size change */
     if (init_refframe) {
-        ret = av_frame_get_buffer(ctx->refframe, 32);
+        ret = av_frame_get_buffer(ctx->refframe, 0);
         if (ret < 0)
             return ret;
     }
@@ -609,7 +611,7 @@ static int tdsc_decode_frame(AVCodecContext *avctx, void *data,
     }
     *got_frame = 1;
 
-    return 0;
+    return avpkt->size;
 }
 
 AVCodec ff_tdsc_decoder = {
