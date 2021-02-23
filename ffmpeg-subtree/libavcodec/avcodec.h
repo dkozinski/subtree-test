@@ -27,6 +27,8 @@
  * Libavcodec external API header
  */
 
+// This change provided by DK
+//
 #include <errno.h>
 #include "libavutil/samplefmt.h"
 #include "libavutil/attributes.h"
